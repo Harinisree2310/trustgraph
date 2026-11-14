@@ -1,0 +1,29 @@
+TRUSTGRAPH QUICK START (Windows)
+================================
+
+1) Extract this folder.
+2) Open Terminal in the extracted folder.
+
+BACKEND (Terminal 1):
+  cd backend
+  py -m venv .venv
+  .venv\Scripts\activate
+  pip install -r requirements.txt
+  uvicorn app:app --reload --port 8000
+
+FRONTEND (Terminal 2):
+  cd frontend
+  npm install
+  npm run dev
+
+Open http://localhost:5173
+
+API docs: http://localhost:8000/docs
+
+For the demo, use the seeded workspace first. Then import:
+  sample-data\requirements.txt
+or
+  sample-data\package.json
+
+The built-in TG-DEMO advisories are synthetic demonstration records.
+Live OSV check is optional and needs backend internet access.

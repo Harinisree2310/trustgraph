@@ -1,0 +1,13 @@
+{
+  "name": "northstar-customer-portal",
+  "version": "1.0.0",
+  "dependencies": {
+    "react": "18.2.0",
+    "lodash": "4.17.19",
+    "axios": "0.21.1",
+    "dayjs": "1.11.10"
+  },
+  "devDependencies": {
+    "vite": "5.2.0"
+  }
+}
