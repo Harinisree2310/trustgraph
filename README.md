@@ -1,4 +1,3 @@
-
 # TrustGraph — Third-Party Software Trust Intelligence
 
 TrustGraph is a working hackathon MVP for **PS05: AI-Powered Cybersecurity**. It helps organizations understand software supply-chain exposure by importing dependency inventories, matching components against vulnerability intelligence, mapping affected applications, prioritizing remediation and exporting reports.
