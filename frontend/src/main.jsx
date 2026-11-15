@@ -54,7 +54,7 @@ function App(){
   const filtered=useMemo(()=>findings.filter(f=>(severity==='All'||f.severity===severity)&&
     [f.package,f.application,f.business_service,f.advisory_id].join(' ').toLowerCase().includes(query.toLowerCase())),[findings,severity,query])
   const active=selected || findings[0]
-  const nav=[['Overview',LayoutDashboard],['Risk findings',ShieldAlert],['Dependency map',GitBranch],['Inventory',Boxes],['Response centre',Target]]
+  const nav=[['Overview',LayoutDashboard],['Risk findings',ShieldAlert],['Dependency map',GitBranch],['Inventory',Boxes],['Response centre',Target],['Incident analysis',Zap]]
   async function resetDemo(){
     setBusy(true);try{await request('/api/demo/reset',{method:'POST'});setSelected(null);setOsvResult(null);await refresh();notify('Demo workspace restored.')}catch(e){notify(e.message)}finally{setBusy(false)}
   }
@@ -101,8 +101,9 @@ function App(){
           {page==='Dependency map'&&<DependencyMap graph={graph} findings={findings} inventory={inventory}/>}
           {page==='Inventory'&&<Inventory inventory={inventory} query={query} setQuery={setQuery}/>}
           {page==='Response centre'&&<ResponseCentre findings={findings} actions={actions} updateStatus={updateStatus}/>}
+          {page==='Incident analysis'&&<IncidentAnalysis request={request} notify={notify}/ >}
         </>}
-        <footer className="footer"><span>TRUSTGRAPH <b>·</b> PROTOTYPE 1.0</span><span>Demo advisory catalogue is synthetic. Use live OSV check for external vulnerability intelligence.</span></footer>
+        <footer className="footer"><span>TRUSTGRAPH <b>·</b> PROTOTYPE 2.0</span><span>Demo advisory catalogue is synthetic. Use live OSV check for external vulnerability intelligence.</span></footer>
       </div>
     </main>
 
@@ -173,6 +174,54 @@ function FindingDrawer({finding:f,onClose,updateStatus,actions}){
 function UploadModal({onClose,onFile,busy,uploadName}){
   const [drag,setDrag]=useState(false)
   return <div className="modal-backdrop" onClick={onClose}><div className="upload-modal" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">INVENTORY INGESTION</span><h2>Bring your dependencies in.</h2><p>Import a manifest to build a component inventory and run the TrustGraph assessment.</p></div><button className="icon-btn" onClick={onClose}><X size={17}/></button></div><label className={'dropzone '+(drag?'dragging':'')} onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);onFile(e.dataTransfer.files[0])}}><input type="file" accept=".zip,.json,.txt" onChange={e=>onFile(e.target.files[0])}/><div className="upload-symbol"><CloudUpload size={24}/></div><b>{busy?'Scanning '+uploadName:'Drop a file here or browse'}</b><span>ZIP · package-lock.json · package.json · requirements.txt · CycloneDX JSON</span><small>Files are processed locally by the backend. No file is sent to a third-party service.</small></label><div className="supported"><b>Supported formats</b><span><Code2 size={14}/> npm manifests and lockfiles</span><span><Code2 size={14}/> Python requirements.txt</span><span><Boxes size={14}/> CycloneDX JSON BOM</span></div><div className="modal-actions"><button className="btn btn-secondary" onClick={onClose}>Cancel</button></div></div></div>
+}
+
+
+function IncidentAnalysis({request,notify}){
+  const [packageName,setPackageName]=useState('log4j-core'),[ecosystem,setEcosystem]=useState('Maven');
+  const [severity,setSeverity]=useState('Critical'),[cvss,setCvss]=useState('9.8');
+  const [result,setResult]=useState(null),[busy,setBusy]=useState(false);
+  async function analyze(demo=false){
+    setBusy(true);setResult(null);
+    const body=demo?{package:'log4j-core',ecosystem:'Maven',severity:'Critical',cvss:9.8,advisory_id:'TG-SCENARIO-001',fixed_version:'2.17.1',source_type:'simulated_demo'}:
+      {package:packageName,ecosystem:ecosystem||null,severity,cvss:Number(cvss),source_type:'reported_incident'};
+    try{const data=await request('/api/incidents/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});setResult(data);notify('Incident impact assessment completed.');}
+    catch(e){notify('Incident analysis failed: '+e.message);}
+    finally{setBusy(false);}
+  }
+  return <div className="incident-page">
+    <div className="incident-intro panel"><div><span className="pill pill-neutral">TRUSTGRAPH 2.0 · INCIDENT WORKFLOW</span><h2>From compromised dependency to business impact.</h2><p>Analyze a reported third-party package incident against the current inventory. TrustGraph maps package presence and declared dependency edges to potentially affected applications and services, then creates an explainable triage score and response plan.</p></div><div className="incident-actions"><button className="btn btn-secondary" disabled={busy} onClick={()=>analyze(true)}><Sparkles size={15}/> Run compromised-package demo</button></div></div>
+    <div className="panel incident-input"><div className="panel-head"><div><h3>Incident details</h3><p>Enter the package named in the incident report.</p></div><span className="pill pill-neutral">INVENTORY-BASED</span></div><div className="incident-form">
+      <label>Package name<input value={packageName} onChange={e=>setPackageName(e.target.value)} placeholder="e.g. log4j-core"/></label>
+      <label>Ecosystem<select value={ecosystem} onChange={e=>setEcosystem(e.target.value)}><option>Maven</option><option>npm</option><option>PyPI</option><option>System</option><option value="">Any ecosystem</option></select></label>
+      <label>Reported severity<select value={severity} onChange={e=>setSeverity(e.target.value)}><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label>
+      <label>CVSS score<input type="number" min="0" max="10" step="0.1" value={cvss} onChange={e=>setCvss(e.target.value)}/></label>
+      <button className="btn btn-primary incident-submit" disabled={busy||!packageName.trim()} onClick={()=>analyze(false)}>{busy?'Analyzing…':'Analyze business impact'} <ArrowRight size={15}/></button>
+    </div></div>
+    {result&&<div className="incident-results">
+      <div className="incident-result-head"><div><span className="eyebrow">ASSESSMENT RESULT</span><h2>{result.incident.package} <span>{result.incident.ecosystem||'All ecosystems'}</span></h2><p>{result.assessment_type==='simulated_scenario'?'Simulated demonstration scenario — not a verified compromise.':'Reported incident assessment — validate the source report independently.'}</p></div><div className="incident-score"><b>{result.risk_score}</b><small>/100 · {result.priority}</small></div></div>
+      <div className="incident-stats">
+        <div className="incident-stat"><b>{result.blast_radius.matched_package_records}</b><span>Matching package records</span></div>
+        <div className="incident-stat"><b>{result.blast_radius.potentially_impacted_components}</b><span>Potentially impacted components</span></div>
+        <div className="incident-stat"><b>{result.blast_radius.affected_applications}</b><span>Affected applications</span></div>
+        <div className="incident-stat"><b>{result.blast_radius.affected_business_services}</b><span>Business services at risk</span></div>
+      </div>
+      <div className="incident-columns">
+        <div className="panel"><div className="panel-head"><div><h3>Business blast radius</h3><p>Inventory evidence grouped by application.</p></div></div>
+          {result.affected_applications.map(app=><div className="incident-app" key={app.application}><div><b>{app.application}</b><small>{app.business_service} · {app.criticality} · {app.exposure}</small></div><span>{app.components.length} component(s)</span><ul>{app.components.map(c=><li key={c.name+c.version}>{c.name} {c.version} <small>({c.dependency_type})</small></li>)}</ul></div>)}
+          {result.affected_applications.length===0&&<p className="empty-state">No affected applications were mapped.</p>}
+        </div>
+        <div className="panel"><div className="panel-head"><div><h3>Why this was prioritized</h3><p>Transparent scoring factors.</p></div></div>
+          <div className="incident-factors">{result.risk_factors.map(f=><div key={f.factor}><span>{f.factor}<small>{f.value}</small></span><b>+{f.contribution}</b></div>)}</div>
+          <div className="incident-caveat"><AlertTriangle size={15}/><span>{result.reachability.note} {result.compromise_verification.note}</span></div>
+        </div>
+      </div>
+      <div className="panel incident-remediation"><div className="panel-head"><div><h3>Recommended response plan</h3><p>Validate, contain, remediate, rebuild and verify.</p></div><span className="pill pill-neutral">{result.remediation_plan.length} STEPS</span></div>
+        {result.remediation_plan.map(step=><div className="incident-step" key={step.order}><span>{String(step.order).padStart(2,'0')}</span><div><b>{step.title}</b><p>{step.detail}</p></div></div>)}
+      </div>
+      <div className="incident-limitations"><b>Evidence and limitations</b><p>Assessment basis: {result.analysis_basis}. Risk score is a triage heuristic, not a probability of exploitation. Package presence does not prove runtime reachability or active compromise. Confirm advisory and fixed-version details with upstream sources before taking action.</p></div>
+    </div>}
+  </div>
 }
 
 createRoot(document.getElementById('root')).render(<App/>)
