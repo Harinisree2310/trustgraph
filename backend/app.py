@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-import csv, io, json, re, uuid, zipfile
+import csv, io, json, os, re, uuid, zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,8 +12,11 @@ import requests
 
 app = FastAPI(title="TrustGraph API", version="1.0.0",
               description="Third-party software trust and supply-chain risk intelligence prototype")
+_extra_origins = [x.strip() for x in os.getenv("TRUSTGRAPH_ALLOWED_ORIGINS", "").split(",") if x.strip()]
 app.add_middleware(
-    CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", *_extra_origins],
+    allow_origin_regex=r"https://.*\\.vercel\\.app",
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
 
@@ -343,3 +346,127 @@ def export_report(fmt: str):
 @app.get("/")
 def root():
     return {"service":"TrustGraph API","docs":"/docs","health":"/api/health"}
+
+
+# TrustGraph 2.0 incident-to-business-impact analysis.
+# Inventory presence is evidence for triage, not proof of compromise or reachability.
+class IncidentRequest(BaseModel):
+    package: str
+    ecosystem: str | None = None
+    severity: str = "Critical"
+    cvss: float = 9.8
+    advisory_id: str | None = None
+    fixed_version: str | None = None
+    source_type: str = "reported_incident"
+
+def _incident_assessment(payload: IncidentRequest):
+    package_name = payload.package.strip()
+    if not package_name:
+        raise HTTPException(400, "Package name is required.")
+    severity = payload.severity.title()
+    if severity not in {"Critical", "High", "Medium", "Low"}:
+        raise HTTPException(400, "Severity must be Critical, High, Medium or Low.")
+    if not 0 <= payload.cvss <= 10:
+        raise HTTPException(400, "CVSS must be between 0 and 10.")
+    if payload.source_type not in {"reported_incident", "simulated_demo"}:
+        raise HTTPException(400, "Unsupported source_type.")
+
+    matched = [p for p in inventory if p["name"].lower() == package_name.lower()
+               and (not payload.ecosystem or p["ecosystem"].lower() == payload.ecosystem.lower())]
+    if not matched:
+        raise HTTPException(404, f"{package_name} was not found in the current inventory.")
+
+    impacted_ids = {p["id"] for p in matched}
+    changed = True
+    while changed:
+        changed = False
+        for component in inventory:
+            if component["id"] not in impacted_ids and any(
+                dep_id in impacted_ids for dep_id in component.get("dependencies", [])
+            ):
+                impacted_ids.add(component["id"])
+                changed = True
+
+    impacted = [p for p in inventory if p["id"] in impacted_ids]
+    apps = {}
+    for p in impacted:
+        entry = apps.setdefault(p["application"], {
+            "application": p["application"], "business_service": p["business_service"],
+            "criticality": p["criticality"], "exposure": p["exposure"], "components": []
+        })
+        entry["components"].append({
+            "name": p["name"], "version": p["version"], "ecosystem": p["ecosystem"],
+            "dependency_type": "direct" if p["direct"] else "transitive",
+            "evidence": p.get("source", "inventory")
+        })
+
+    severity_weight = {"Critical": 40, "High": 30, "Medium": 18, "Low": 8}[severity]
+    criticality_weight = {"Critical": 20, "High": 14, "Medium": 8, "Low": 3}
+    exposure_weight = {"Internet-facing": 15, "Internal": 8, "Build-time": 4}
+    business_weight = max((criticality_weight.get(x["criticality"], 5) +
+                           exposure_weight.get(x["exposure"], 3) for x in apps.values()), default=0)
+    direct_bonus = 5 if any(p["direct"] for p in matched) else 0
+    blast_bonus = min(10, max(0, (len(apps) - 1) * 3))
+    score = min(100, round(severity_weight + payload.cvss * 2.5 + business_weight + direct_bonus + blast_bonus))
+    priority = "P0" if score >= 85 else "P1" if score >= 70 else "P2" if score >= 50 else "P3"
+
+    remediation = [
+        {"order": 1, "title": "Validate the incident and inventory evidence",
+         "detail": f"Confirm {package_name} and the reported advisory against the upstream maintainer or trusted advisory source; verify the component in the deployed artifact and its version."},
+        {"order": 2, "title": "Contain potentially affected releases",
+         "detail": "Pause promotion of affected builds and isolate or roll back artifacts only under the organization's incident-response policy."},
+        {"order": 3, "title": "Select a verified safe version",
+         "detail": f"Use {payload.fixed_version} only if the upstream advisory confirms it is fixed; otherwise identify a vendor-supported patched release." if payload.fixed_version else "Identify a vendor-supported patched release from the authoritative advisory; TrustGraph will not guess a safe version."},
+        {"order": 4, "title": "Rebuild and test",
+         "detail": "Regenerate lockfiles and SBOMs, rebuild from trusted sources, run regression/security tests, and scan the resulting artifact."},
+        {"order": 5, "title": "Review downstream impact",
+         "detail": "Review logs, credentials and sensitive operations accessible to affected workloads; rotate secrets if investigation indicates exposure."},
+        {"order": 6, "title": "Verify closure",
+         "detail": "Confirm the vulnerable version is absent from deployed artifacts, preserve evidence, and close the work item only after verification."}
+    ]
+    return {
+        "assessment_type": "simulated_scenario" if payload.source_type == "simulated_demo" else "reported_incident_assessment",
+        "incident": {"package": package_name, "ecosystem": payload.ecosystem, "severity": severity,
+                     "cvss": payload.cvss, "advisory_id": payload.advisory_id,
+                     "reported_fixed_version": payload.fixed_version},
+        "status": "inventory_match_found", "analysis_basis": "Current inventory records and declared dependency edges",
+        "risk_score": score, "priority": priority,
+        "risk_interpretation": "A transparent triage heuristic based on supplied severity/CVSS, affected-service criticality and exposure, direct presence, and inventory blast radius. Not a probability of exploitation.",
+        "risk_factors": [
+            {"factor": "Reported severity", "value": severity, "contribution": severity_weight},
+            {"factor": "CVSS input", "value": payload.cvss, "contribution": round(payload.cvss * 2.5, 1)},
+            {"factor": "Highest affected-service context", "value": f"{max((x['criticality'] for x in apps.values()), default='Unknown')} criticality / {max((x['exposure'] for x in apps.values()), default='Unknown')} exposure", "contribution": business_weight},
+            {"factor": "Direct package presence", "value": "Yes" if direct_bonus else "No", "contribution": direct_bonus},
+            {"factor": "Additional application blast radius", "value": len(apps), "contribution": blast_bonus}
+        ],
+        "matched_components": [{"id": p["id"], "name": p["name"], "version": p["version"],
+            "ecosystem": p["ecosystem"], "direct": p["direct"], "application": p["application"],
+            "business_service": p["business_service"], "criticality": p["criticality"], "exposure": p["exposure"]}
+            for p in matched],
+        "dependent_components": [{"id": p["id"], "name": p["name"], "version": p["version"],
+            "application": p["application"]} for p in impacted if p["id"] not in {m["id"] for m in matched}],
+        "affected_applications": list(apps.values()),
+        "affected_business_services": sorted({x["business_service"] for x in apps.values()}),
+        "blast_radius": {"matched_package_records": len(matched), "potentially_impacted_components": len(impacted),
+            "affected_applications": len(apps), "affected_business_services": len({x["business_service"] for x in apps.values()})},
+        "reachability": {"status": "not_assessed", "note": "Manifest presence and dependency edges do not prove vulnerable code is reachable or executed at runtime."},
+        "compromise_verification": {"status": "not_verified", "note": "This analyzes a reported or simulated incident; it does not detect compromise or verify malicious activity."},
+        "remediation_plan": remediation,
+        "limitations": [
+            "Application ownership and business-service mappings depend on supplied inventory metadata.",
+            "Dependency relationships are manifest-level; runtime call paths and vulnerable-function reachability are not analyzed.",
+            "Risk score is a triage heuristic, not a calibrated likelihood or financial-loss estimate.",
+            "Confirm advisory details and fixed versions with authoritative upstream sources before remediation."
+        ]
+    }
+
+@app.post("/api/incidents/analyze")
+def analyze_incident(payload: IncidentRequest):
+    return _incident_assessment(payload)
+
+@app.get("/api/incidents/demo")
+def demo_incident():
+    return _incident_assessment(IncidentRequest(
+        package="log4j-core", ecosystem="Maven", severity="Critical", cvss=9.8,
+        advisory_id="TG-SCENARIO-001", fixed_version="2.17.1", source_type="simulated_demo"
+    ))
