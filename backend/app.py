@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-import csv, io, json, os, re, uuid, zipfile
+import csv, io, json, os, re, uuid, zipfile, copy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -78,6 +78,16 @@ findings = []
 actions = {}
 workspace_mode = "live"
 scan_meta = {"last_scan": None, "source":"No inventory imported yet", "scanned_files":0}
+live_workspace = {"inventory": [], "findings": [], "actions": {}, "scan_meta": copy.deepcopy(scan_meta)}
+
+def save_live_workspace():
+    global live_workspace
+    live_workspace = {
+        "inventory": copy.deepcopy(inventory),
+        "findings": copy.deepcopy(findings),
+        "actions": copy.deepcopy(actions),
+        "scan_meta": copy.deepcopy(scan_meta),
+    }
 
 def version_tuple(v: str):
     nums = re.findall(r"\d+", str(v))
@@ -186,6 +196,8 @@ def update_action(finding_id: str, body: ActionUpdate):
     current = actions.get(finding_id, {"finding_id":finding_id,"status":"Open","owner":"Unassigned","updated_at":now()})
     current.update({"status":body.status,"updated_at":now()})
     actions[finding_id] = current
+    if workspace_mode == "live":
+        save_live_workspace()
     return current
 
 def parse_package_json(data: dict):
@@ -295,12 +307,15 @@ async def scan(file: UploadFile = File(...)):
     workspace_mode="live"
     actions.clear()
     scan_meta={"last_scan":now(),"source":file.filename or "Uploaded file","scanned_files":1}
+    save_live_workspace()
     return {"overview":overview(),"inventory_count":len(inventory),"findings":[],
             "message":f"Imported {len(inventory)} dependency records from {file.filename}. Run a live OSV scan to check published advisories."}
 
 @app.post("/api/demo/reset")
 def reset_demo():
     global inventory, findings, scan_meta, workspace_mode
+    if workspace_mode == "live":
+        save_live_workspace()
     inventory=seed_inventory()
     findings=findings_for(inventory)
     workspace_mode="simulation"
@@ -310,13 +325,13 @@ def reset_demo():
 
 @app.post("/api/live/reset")
 def reset_live():
-    global inventory, findings, scan_meta, workspace_mode
-    inventory=[]
-    findings=[]
+    global inventory, findings, scan_meta, workspace_mode, actions
+    inventory=copy.deepcopy(live_workspace["inventory"])
+    findings=copy.deepcopy(live_workspace["findings"])
+    actions=copy.deepcopy(live_workspace["actions"])
+    scan_meta=copy.deepcopy(live_workspace["scan_meta"])
     workspace_mode="live"
-    actions.clear()
-    scan_meta={"last_scan":None,"source":"No inventory imported yet","scanned_files":0}
-    return {"overview":overview(),"message":"Live workspace ready. Import a dependency inventory to begin."}
+    return {"overview":overview(),"message":"Returned to your live workspace. Imported inventory and live scan results are restored."}
 
 def _osv_severity(vuln):
     candidates=[(vuln.get("database_specific") or {}).get("severity"),
@@ -368,6 +383,8 @@ def _osv_risk_finding(component, vuln):
 def osv_check():
     """Match imported package versions against published OSV.dev vulnerability records."""
     global findings, scan_meta, workspace_mode
+    if workspace_mode != "live":
+        raise HTTPException(400,"Switch back to Live mode before querying OSV.dev. Simulation findings remain separate.")
     if not inventory:
         raise HTTPException(400,"Import a dependency inventory before running a live vulnerability scan.")
     ecosystem_map={"npm":"npm","PyPI":"PyPI","Maven":"Maven"}
@@ -391,6 +408,7 @@ def osv_check():
     workspace_mode="live"
     actions.clear()
     scan_meta={"last_scan":now(),"source":"OSV.dev live vulnerability query","scanned_files":len(eligible)}
+    save_live_workspace()
     return {"source":"OSV.dev","items":findings,"count":len(findings),"scanned_components":len(eligible),
             "unsupported_components":len(inventory)-len(eligible),"overview":overview(),
             "message":f"Checked {len(eligible)} package versions against OSV.dev; found {len(findings)} matching advisories."}
@@ -398,7 +416,7 @@ def osv_check():
 @app.get("/api/export/{fmt}")
 def export_report(fmt: str):
     report={"generated_at":now(),"product":"TrustGraph","data_source":scan_meta["source"],
-            "notice":"Demo advisory matches are synthetic unless a separate OSV live check is performed.",
+            "notice":"Live mode findings are matched from OSV.dev. Simulation mode findings are synthetic TrustGraph demonstration records.",
             "overview":overview(),"inventory":inventory,"findings":findings,
             "remediation_actions":list(actions.values())}
     if fmt=="json":
