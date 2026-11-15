@@ -70,6 +70,7 @@ def seed_inventory():
       item("pkg-014","openssl","3.0.8","System",True,"Core Platform","Platform security","Critical","Internal","Apache-2.0","3.4.0"),
       item("pkg-015","zlib","1.2.13","System",False,"Core Platform","Platform security","Critical","Internal","Zlib","1.3.1"),
       item("pkg-016","dayjs","1.11.10","npm",True,"Customer Portal","Customer identity","High","Internet-facing","MIT","1.11.13"),
+      item("pkg-017","legacy-logging-adapter","1.4.0","Maven",False,"Billing Worker","Payment settlement","Critical","Internet-facing","Apache-2.0","1.6.2",["pkg-001"]),
     ]
 
 inventory = seed_inventory()
