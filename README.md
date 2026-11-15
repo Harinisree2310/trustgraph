@@ -2,6 +2,10 @@
 
 TrustGraph is a live-first software supply-chain risk intelligence prototype. The default workspace starts empty; users import an actual dependency inventory and query OSV.dev for published advisories. A separate simulation mode loads a seeded fictional enterprise environment for repeatable demonstrations.
 
+**Live demo:** https://trustgraph-eight.vercel.app  
+**Backend API:** https://trustgraph-api-gx1g.onrender.com  
+**Interactive API documentation:** https://trustgraph-api-gx1g.onrender.com/docs
+
 ## TrustGraph 2.0 — incident-to-business-impact workflow
 
 The 2.0 increment adds an incident analysis flow. Given a reported or simulated compromised package, the backend matches it against the current inventory, follows declared reverse dependency edges, groups potentially impacted components by application and business service, calculates an explainable triage score, and returns a structured response plan.
@@ -39,7 +43,9 @@ See [problem statement](docs/TRUSTGRAPH_2_0_PROBLEM_STATEMENT.md), [architecture
 
 ## Run locally
 
-Backend:
+Prerequisites: Python 3.10+ and Node.js 18+.
+
+Backend (terminal 1):
 ```bash
 cd backend
 python -m venv .venv
@@ -49,7 +55,7 @@ pip install -r requirements.txt
 uvicorn app:app --reload --port 8000
 ```
 
-Frontend (second terminal):
+Frontend (terminal 2):
 ```bash
 cd frontend
 npm install
@@ -58,7 +64,16 @@ npm run dev
 
 Open http://localhost:5173. API docs: http://localhost:8000/docs.
 
-For hosted frontend deployment, set Vercel environment variable `VITE_API_URL` to the backend base URL. Backend CORS must allow the frontend origin.
+The frontend reads `VITE_API_URL` at build time and defaults to `http://localhost:8000`. For local development, copy `frontend/.env.example` to `frontend/.env.local` if you need to override the API URL. For the hosted frontend, configure `VITE_API_URL=https://trustgraph-api-gx1g.onrender.com` in the Vercel project's environment variables and redeploy. The backend optionally accepts additional comma-separated CORS origins through `TRUSTGRAPH_ALLOWED_ORIGINS`; see `backend/.env.example`.
+
+## Deployment
+
+- Frontend: Vercel — https://trustgraph-eight.vercel.app
+- Backend: Render — https://trustgraph-api-gx1g.onrender.com
+- API health endpoint: https://trustgraph-api-gx1g.onrender.com/api/health
+- API documentation: https://trustgraph-api-gx1g.onrender.com/docs
+
+The backend must be reachable from the browser and have outbound internet access for live OSV.dev lookups. On Render's free tier, the service may take a short time to wake after inactivity.
 
 ## Recommended demo
 
@@ -68,6 +83,20 @@ For hosted frontend deployment, set Vercel environment variable `VITE_API_URL` t
 4. Open a finding and inspect its OSV source link, package version and available fixed-version guidance.
 5. Explain that risk scores combine advisory severity when available with business context; they are prioritization heuristics.
 6. Use **Run simulation** only for the repeatable Northstar Commerce demonstration and compromised-package scenario.
+
+## Verification checklist
+
+Before presenting a build, verify these flows in the deployed application:
+
+- [ ] The frontend loads and the Overview page renders.
+- [ ] The backend health endpoint responds.
+- [ ] A supported dependency manifest imports successfully.
+- [ ] A live OSV.dev scan returns findings when matching advisories exist.
+- [ ] Switching to simulation loads the labelled demo workspace.
+- [ ] Returning to Live restores the live workspace for the current backend process.
+- [ ] JSON and CSV exports download successfully.
+
+This checklist is a manual acceptance guide, not a claim that every item has been independently tested in every deployment.
 
 ## API
 
