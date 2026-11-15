@@ -33,6 +33,7 @@ function App(){
   const [showUpload,setShowUpload]=useState(false)
   const [osvBusy,setOsvBusy]=useState(false)
   const [osvResult,setOsvResult]=useState(null)
+  const [workspaceMode,setWorkspaceMode]=useState('live')
 
   const notify = msg => { setToast(msg); window.clearTimeout(window.__tgToast); window.__tgToast=window.setTimeout(()=>setToast(''),3600) }
   async function request(path,opts={}){
@@ -45,7 +46,7 @@ function App(){
     setLoading(true)
     try{
       const [o,i,f,g,a]=await Promise.all(['/api/overview','/api/inventory','/api/findings','/api/graph','/api/actions'].map(x=>request(x)))
-      setOverview(o);setInventory(i.items);setFindings(f.items);setGraph(g);setActions(a.items);setApiOnline(true)
+      setOverview(o);setInventory(i.items);setFindings(f.items);setGraph(g);setActions(a.items);setWorkspaceMode(o.mode||'live');setApiOnline(true)
     }catch(e){setApiOnline(false);notify('Could not connect to TrustGraph API. Start the backend and retry.')}
     finally{setLoading(false)}
   }
@@ -56,13 +57,32 @@ function App(){
   const active=selected || findings[0]
   const nav=[['Overview',LayoutDashboard],['Risk findings',ShieldAlert],['Dependency map',GitBranch],['Inventory',Boxes],['Response centre',Target],['Incident analysis',Zap]]
   async function resetDemo(){
-    setBusy(true);try{await request('/api/demo/reset',{method:'POST'});setSelected(null);setOsvResult(null);await refresh();notify('Demo workspace restored.')}catch(e){notify(e.message)}finally{setBusy(false)}
+    setBusy(true)
+    try{await request('/api/demo/reset',{method:'POST'});setSelected(null);setOsvResult(null);await refresh();notify('Simulation loaded. Findings are synthetic demo data.')}
+    catch(e){notify(e.message)}finally{setBusy(false)}
+  }
+  async function switchToLive(){
+    setBusy(true)
+    try{await request('/api/live/reset',{method:'POST'});setSelected(null);setOsvResult(null);setPage('Overview');await refresh();notify('Live workspace ready. Import your own dependency inventory.')}
+    catch(e){notify(e.message)}finally{setBusy(false)}
   }
   async function uploadFile(file){
     if(!file)return
     setBusy(true);setUploadName(file.name)
-    try{const fd=new FormData();fd.append('file',file);const res=await request('/api/scan',{method:'POST',body:fd});await refresh();setPage('Risk findings');notify(res.message)}
-    catch(e){notify('Scan failed: '+e.message)}finally{setBusy(false);setShowUpload(false)}
+    try{
+      const fd=new FormData();fd.append('file',file)
+      const res=await request('/api/scan',{method:'POST',body:fd})
+      await refresh()
+      try{
+        const live=await request('/api/osv/check',{method:'POST'})
+        setOsvResult(live);await refresh();setPage('Risk findings')
+        notify(`Imported ${res.inventory_count} components. OSV.dev found ${live.count} matching advisories.`)
+      }catch(scanError){
+        await refresh();setPage('Inventory')
+        notify('Inventory imported, but live OSV lookup failed. Use Check live vulnerabilities to retry.')
+      }
+    }catch(e){notify('Import failed: '+e.message)}
+    finally{setBusy(false);setShowUpload(false)}
   }
   async function updateStatus(f,status){
     try{await request('/api/actions/'+encodeURIComponent(f.id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});await refresh();notify(`Finding marked ${status.toLowerCase()}.`)}
@@ -70,8 +90,11 @@ function App(){
   }
   async function runOSV(){
     setOsvBusy(true)
-    try{const res=await request('/api/osv/check',{method:'POST'});setOsvResult(res);notify(`OSV returned ${res.count} live advisories.`)}
-    catch(e){notify('Live OSV lookup unavailable. Check backend internet access.')}
+    try{
+      const res=await request('/api/osv/check',{method:'POST'})
+      setOsvResult(res);await refresh();setPage('Risk findings')
+      notify(`OSV.dev checked ${res.scanned_components} components and found ${res.count} advisories.`)
+    }catch(e){notify('Live OSV scan failed: '+e.message)}
     finally{setOsvBusy(false)}
   }
   async function download(fmt){
@@ -82,7 +105,7 @@ function App(){
   return <div className="shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><GitBranch size={20}/></div><div><div className="brand-name">trustgraph<span>®</span></div><div className="brand-sub">SOFTWARE TRUST INTELLIGENCE</div></div></div>
-      <div className="workspace"><div className="workspace-icon"><ShieldCheck size={17}/></div><div><b>Northstar Commerce</b><small>Production workspace</small></div><ChevronDown size={14}/></div>
+      <div className="workspace"><div className="workspace-icon"><ShieldCheck size={17}/></div><div><b>{workspaceMode==='simulation'?'Northstar Commerce':'Live workspace'}</b><small>{workspaceMode==='simulation'?'Simulated enterprise environment':'Your imported inventory'}</small></div><ChevronDown size={14}/></div>
       <div className="nav-label">WORKSPACE</div>
       <nav>{nav.map(([name,Icon])=><button key={name} className={'nav-item '+(page===name?'active':'')} onClick={()=>setPage(name)}><Icon size={17}/><span>{name}</span>{name==='Risk findings'&&findings.length>0&&<em>{findings.length}</em>}</button>)}</nav>
       <div className="nav-label nav-label-lower">MANAGE</div>
@@ -92,18 +115,18 @@ function App(){
     </aside>
 
     <main className="main">
-      <header className="topbar"><div className="crumb"><span>Workspace</span><ChevronRight size={13}/><b>{page}</b></div><div className="top-actions"><div className="connection"><span className={apiOnline?'live-dot':'dead-dot'}/>{apiOnline?'API connected':'API offline'}</div><button className="icon-btn" title="Refresh" onClick={refresh}><RefreshCw size={16}/></button><button className="top-avatar">NS</button></div></header>
+      <header className="topbar"><div className="crumb"><span>Workspace</span><ChevronRight size={13}/><b>{page}</b></div><div className="top-actions"><div className="connection"><span className={apiOnline?'live-dot':'dead-dot'}/>{apiOnline?'API connected':'API offline'}</div><button className="btn btn-secondary mode-toggle" disabled={busy||!apiOnline} onClick={workspaceMode==='simulation'?switchToLive:resetDemo}>{workspaceMode==='simulation'?'Return to live':'Run simulation'}</button><button className="icon-btn" title="Refresh" onClick={refresh}><RefreshCw size={16}/></button><button className="top-avatar">NS</button></div></header>
       <div className="content">
         <div className="page-heading"><div><div className="eyebrow">SECURITY POSTURE <span>/</span> THIRD-PARTY RISK</div><h1>{page==='Overview'?'Software trust, in focus.':page}</h1><p>{page==='Overview'?'Understand what your software depends on, what could go wrong, and what to do next.':page==='Risk findings'?'Prioritized exposure across your software supply chain.':page==='Dependency map'?'Trace external components to the applications and services that rely on them.':page==='Inventory'?'A consolidated view of packages, versions, licenses and ownership.':'Turn findings into accountable remediation work.'}</p></div><div className="heading-actions"><button className="btn btn-secondary" onClick={()=>download('json')}><Download size={15}/> Export</button><button className="btn btn-primary" onClick={()=>setShowUpload(true)}><Upload size={15}/> Import inventory</button></div></div>
         {loading?<div className="loading"><div className="spinner"/>Loading workspace intelligence…</div>:!apiOnline?<div className="offline"><AlertTriangle/><b>TrustGraph API is not connected</b><p>Start the FastAPI backend on port 8000, then refresh this page.</p><button className="btn btn-primary" onClick={refresh}>Retry connection</button></div>:<>
-          {page==='Overview'&&<Overview overview={overview} findings={findings} inventory={inventory} setPage={setPage} setSelected={setSelected} actions={actions} onReset={resetDemo} busy={busy} onOSV={runOSV} osvBusy={osvBusy} osvResult={osvResult}/>}
-          {page==='Risk findings'&&<Findings findings={filtered} query={query} setQuery={setQuery} severity={severity} setSeverity={setSeverity} setSelected={setSelected} selected={selected} actions={actions}/>}
+          {page==='Overview'&&<Overview overview={overview} findings={findings} inventory={inventory} setPage={setPage} setSelected={setSelected} actions={actions} onReset={resetDemo} busy={busy} onOSV={runOSV} osvBusy={osvBusy} osvResult={osvResult} mode={workspaceMode} onImport={()=>setShowUpload(true)}/>}
+          {page==='Risk findings'&&<Findings findings={filtered} query={query} setQuery={setQuery} severity={severity} setSeverity={setSeverity} setSelected={setSelected} selected={selected} actions={actions} mode={workspaceMode}/>}
           {page==='Dependency map'&&<DependencyMap graph={graph} findings={findings} inventory={inventory}/>}
           {page==='Inventory'&&<Inventory inventory={inventory} query={query} setQuery={setQuery}/>}
           {page==='Response centre'&&<ResponseCentre findings={findings} actions={actions} updateStatus={updateStatus}/>}
           {page==='Incident analysis'&&<IncidentAnalysis request={request} notify={notify}/ >}
         </>}
-        <footer className="footer"><span>TRUSTGRAPH <b>·</b> PROTOTYPE 2.0</span><span>Demo advisory catalogue is synthetic. Use live OSV check for external vulnerability intelligence.</span></footer>
+        <footer className="footer"><span>TRUSTGRAPH <b>·</b> PROTOTYPE 2.1</span><span>{workspaceMode==='simulation'?'Simulation mode · Built-in advisory records are synthetic.':'Live mode · Findings are sourced from OSV.dev after a successful scan.'}</span></footer>
       </div>
     </main>
 
@@ -116,7 +139,15 @@ function App(){
 function Metric({label,value,sub,icon:Icon,tone='green',trend}){
   return <div className="metric-card"><div className="metric-top"><span>{label}</span><div className={'metric-icon '+tone}><Icon size={17}/></div></div><div className="metric-value">{value??'—'}</div><div className="metric-foot"><span>{sub}</span>{trend&&<span className="metric-trend"><ArrowUpRight size={13}/>{trend}</span>}</div></div>
 }
-function Overview({overview:o,findings,inventory,setPage,setSelected,actions,onReset,busy,onOSV,osvBusy,osvResult}){
+function Overview({overview:o,findings,inventory,setPage,setSelected,actions,onReset,busy,onOSV,osvBusy,osvResult,mode,onImport}){
+  if(mode==='live'&&inventory.length===0) return <div className="live-welcome panel">
+    <div className="live-welcome-icon"><ShieldCheck size={25}/></div>
+    <span className="pill pill-neutral">LIVE VULNERABILITY INTELLIGENCE</span>
+    <h2>Start with your real software inventory.</h2>
+    <p>Import a package manifest or SBOM. TrustGraph will query OSV.dev for published advisories affecting the exact package versions, then prioritize matches using the application context in your inventory.</p>
+    <div className="live-welcome-actions"><button className="btn btn-primary" onClick={onImport}>Import dependency inventory</button><button className="btn btn-secondary" onClick={onReset} disabled={busy}>Run simulation instead</button></div>
+    <div className="live-welcome-foot"><span><CheckCircle2 size={14}/> Real advisory IDs and source links</span><span><CheckCircle2 size={14}/> No seeded findings in live mode</span><span><CheckCircle2 size={14}/> Simulation stays separate</span></div>
+  </div>
   const critical=findings.filter(f=>f.severity==='Critical').length, high=findings.filter(f=>f.severity==='High').length
   const top=findings.slice(0,4)
   const apps=[...new Set(findings.map(f=>f.application))]
@@ -143,13 +174,13 @@ function Overview({overview:o,findings,inventory,setPage,setSelected,actions,onR
     <div className="section-row section-row-tight"><div><h2>Needs attention</h2><p>Highest-priority items from your current inventory.</p></div><button className="text-link" onClick={()=>setPage('Risk findings')}>Open risk register <ArrowRight size={14}/></button></div>
     <div className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>DEPENDENCY</th><th>APPLICATION</th><th>SEVERITY</th><th>RISK SCORE</th><th>RECOMMENDED FIX</th><th></th></tr></thead><tbody>{top.map(f=><tr key={f.id} onClick={()=>setSelected(f)} className="click-row"><td><div className="package-cell"><span className="package-icon"><Code2 size={15}/></span><div><b>{f.package}</b><small>{f.version} · {f.ecosystem}</small></div></div></td><td>{f.application}</td><td><span className={`severity-tag ${f.severity.toLowerCase()}`}>{f.severity}</span></td><td><div className="score-cell"><b>{f.risk_score}</b><div className="score-track"><i style={{width:`${f.risk_score}%`}}/></div></div></td><td className="fix-cell">Upgrade to {f.fixed}</td><td><ChevronRight size={16} className="muted"/></td></tr>)}</tbody></table>{top.length===0&&<div className="empty-state">No findings in this inventory. Import a manifest or restore the demo workspace.</div>}</div><div className="table-foot"><span>Showing {top.length} of {findings.length} findings</span><button className="text-link" onClick={()=>setPage('Risk findings')}>View full register <ArrowRight size={13}/></button></div></div>
     <div className="bottom-grid"><div className="panel data-panel"><div className="panel-head"><div><h3>Inventory coverage</h3><p>What TrustGraph currently knows about</p></div><Package size={18} className="muted"/></div><div className="coverage-grid"><div><b>{inventory.filter(x=>x.license!=='Unknown').length}</b><span>Known licenses</span></div><div><b>{inventory.filter(x=>x.latest!==x.version).length}</b><span>Version updates available</span></div><div><b>{inventory.filter(x=>x.source==='Uploaded dependency manifest').length}</b><span>Imported records</span></div></div></div>
-      <div className="panel quick-panel"><div className="panel-head"><div><h3>Quick actions</h3><p>Continue your security workflow</p></div><Zap size={18} className="muted"/></div><div className="quick-actions"><button onClick={()=>onOSV()} disabled={osvBusy}><Globe2 size={16}/><span>{osvBusy?'Querying OSV…':'Check live OSV intelligence'}</span><ArrowRight size={14}/></button><button onClick={onReset} disabled={busy}><RefreshCw size={16}/><span>Restore demo scenario</span><ArrowRight size={14}/></button></div>{osvResult&&<div className="osv-summary">OSV live check: <b>{osvResult.count}</b> advisories returned.</div>}</div></div>
+      <div className="panel quick-panel"><div className="panel-head"><div><h3>Quick actions</h3><p>Continue your security workflow</p></div><Zap size={18} className="muted"/></div><div className="quick-actions"><button onClick={()=>onOSV()} disabled={osvBusy}><Globe2 size={16}/><span>{osvBusy?'Querying OSV…':'Check live OSV intelligence'}</span><ArrowRight size={14}/></button><button onClick={onReset} disabled={busy}><RefreshCw size={16}/><span>Run simulation scenario</span><ArrowRight size={14}/></button></div>{osvResult&&<div className="osv-summary">OSV live check: <b>{osvResult.count}</b> advisories returned.</div>}</div></div>
   </>
 }
-function Findings({findings,query,setQuery,severity,setSeverity,setSelected,selected,actions}){
+function Findings({findings,query,setQuery,severity,setSeverity,setSelected,selected,actions,mode}){
   return <div className="panel full-panel"><div className="filter-toolbar"><div className="search-box"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search package, application or advisory…"/></div><div className="filter-select"><Filter size={15}/><select value={severity} onChange={e=>setSeverity(e.target.value)}><option>All</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></div><span className="result-count">{findings.length} results</span></div>
     <div className="table-wrap"><table><thead><tr><th>DEPENDENCY / ADVISORY</th><th>APPLICATION</th><th>SEVERITY</th><th>PRIORITY</th><th>RISK SCORE</th><th>STATUS</th><th></th></tr></thead><tbody>{findings.map(f=><tr key={f.id} onClick={()=>setSelected(f)} className="click-row"><td><div className="package-cell"><span className="package-icon"><Code2 size={15}/></span><div><b>{f.package}</b><small>{f.version} · {f.advisory_id}</small></div></div></td><td>{f.application}</td><td><span className={`severity-tag ${f.severity.toLowerCase()}`}>{f.severity}</span></td><td><span className={`priority ${f.priority.toLowerCase()}`}>{f.priority}</span></td><td><div className="score-cell"><b>{f.risk_score}</b><div className="score-track"><i style={{width:`${f.risk_score}%`}}/></div></div></td><td><span className="status-text">{actions.find(a=>a.finding_id===f.id)?.status||'Open'}</span></td><td><ChevronRight size={16} className="muted"/></td></tr>)}</tbody></table>{findings.length===0&&<div className="empty-state">No findings match those filters.</div>}</div>
-    <div className="table-foot"><span>Advisories in this demo catalogue are synthetic examples.</span><span>Risk scores are explainable prioritization signals.</span></div></div>
+    <div className="table-foot"><span>{mode==='simulation'?'Synthetic TrustGraph demonstration advisories.':'Live OSV.dev advisory matches for imported package versions.'}</span><span>Risk scores are TrustGraph prioritization heuristics, not CVSS or exploit probabilities.</span></div></div>
 }
 function Inventory({inventory,query,setQuery}){
   const filtered=inventory.filter(p=>[p.name,p.application,p.ecosystem,p.license].join(' ').toLowerCase().includes(query.toLowerCase()))
@@ -169,7 +200,7 @@ function ResponseCentre({findings,actions,updateStatus}){
 function FindingDrawer({finding:f,onClose,updateStatus,actions}){
   const [tab,setTab]=useState('Overview')
   const action=actions.find(a=>a.finding_id===f.id)
-  return <div className="drawer-backdrop" onClick={onClose}><aside className="drawer" onClick={e=>e.stopPropagation()}><div className="drawer-head"><div><span className="eyebrow">FINDING DETAIL / {f.id.slice(-8).toUpperCase()}</span><h2>{f.package}</h2></div><button className="icon-btn" onClick={onClose}><X size={17}/></button></div><div className="drawer-tabs"><button className={tab==='Overview'?'selected':''} onClick={()=>setTab('Overview')}>Overview</button><button className={tab==='Remediation'?'selected':''} onClick={()=>setTab('Remediation')}>Remediation</button></div>{tab==='Overview'?<><div className="drawer-badges"><span className={`severity-tag ${f.severity.toLowerCase()}`}>{f.severity}</span><span className={`priority ${f.priority.toLowerCase()}`}>{f.priority}</span><span className="score-badge">{f.risk_score} / 100 risk</span></div><p className="drawer-summary">{f.summary}</p><div className="detail-section"><h4>COMPONENT CONTEXT</h4><div className="detail-grid"><div><small>Installed version</small><b>{f.version}</b></div><div><small>Fixed version</small><b className="green-text">{f.fixed}</b></div><div><small>Ecosystem</small><b>{f.ecosystem}</b></div><div><small>CVSS (demo)</small><b>{f.cvss}</b></div><div><small>Application</small><b>{f.application}</b></div><div><small>Business service</small><b>{f.business_service}</b></div></div></div><div className="detail-section"><h4>WHY THIS IS PRIORITIZED</h4><div className="reason-list"><div><Check size={14}/> {f.severity} advisory severity</div><div><Check size={14}/> {f.criticality} business criticality</div><div><Check size={14}/> {f.exposure} exposure</div><div><Check size={14}/> {f.direct?'Direct':'Transitive'} dependency</div></div></div><div className="source-note"><AlertTriangle size={15}/><span>This match comes from the synthetic TrustGraph demo catalogue. Validate against a trusted advisory source before acting.</span></div></>:<><div className="recommendation-card"><div className="recommendation-icon"><ShieldCheck size={18}/></div><div><b>Recommended action</b><p>{f.recommendation}</p></div></div><div className="detail-section"><h4>VALIDATION CHECKLIST</h4><div className="checklist"><label><input type="checkbox"/> Confirm component is present in deployed artifact</label><label><input type="checkbox"/> Check reachability and exploit preconditions</label><label><input type="checkbox"/> Review upgrade compatibility and release notes</label><label><input type="checkbox"/> Run tests and re-scan after deployment</label></div></div></>}<div className="drawer-footer"><label>WORK ITEM STATUS</label><select value={action?.status||'Open'} onChange={e=>updateStatus(f,e.target.value)}><option>Open</option><option>In progress</option><option>Resolved</option><option>Accepted risk</option></select><button className="btn btn-primary" onClick={onClose}>Done</button></div></aside></div>
+  return <div className="drawer-backdrop" onClick={onClose}><aside className="drawer" onClick={e=>e.stopPropagation()}><div className="drawer-head"><div><span className="eyebrow">FINDING DETAIL / {f.id.slice(-8).toUpperCase()}</span><h2>{f.package}</h2></div><button className="icon-btn" onClick={onClose}><X size={17}/></button></div><div className="drawer-tabs"><button className={tab==='Overview'?'selected':''} onClick={()=>setTab('Overview')}>Overview</button><button className={tab==='Remediation'?'selected':''} onClick={()=>setTab('Remediation')}>Remediation</button></div>{tab==='Overview'?<><div className="drawer-badges"><span className={`severity-tag ${f.severity.toLowerCase()}`}>{f.severity}</span><span className={`priority ${f.priority.toLowerCase()}`}>{f.priority}</span><span className="score-badge">{f.risk_score} / 100 risk</span></div><p className="drawer-summary">{f.summary}</p><div className="detail-section"><h4>COMPONENT CONTEXT</h4><div className="detail-grid"><div><small>Installed version</small><b>{f.version}</b></div><div><small>Fixed version</small><b className="green-text">{f.fixed}</b></div><div><small>Ecosystem</small><b>{f.ecosystem}</b></div><div><small>CVSS base score</small><b>{f.cvss!=null?f.cvss:(f.cvss_vector?'Vector available':'Not supplied')}</b></div><div><small>Application</small><b>{f.application}</b></div><div><small>Business service</small><b>{f.business_service}</b></div></div></div><div className="detail-section"><h4>WHY THIS IS PRIORITIZED</h4><div className="reason-list"><div><Check size={14}/> {f.severity} advisory severity</div><div><Check size={14}/> {f.criticality} business criticality</div><div><Check size={14}/> {f.exposure} exposure</div><div><Check size={14}/> {f.direct?'Direct':'Transitive'} dependency</div></div></div><div className="source-note"><AlertTriangle size={15}/><span>{f.demo_intelligence?'This is a synthetic TrustGraph simulation advisory, not a live vulnerability record.':`Matched from ${f.source||'external advisory intelligence'}. Verify affected ranges and remediation guidance before acting.`}{f.source_url&&<> <a href={f.source_url} target="_blank" rel="noreferrer">Open source advisory</a></>}</span></div></>:<><div className="recommendation-card"><div className="recommendation-icon"><ShieldCheck size={18}/></div><div><b>Recommended action</b><p>{f.recommendation}</p></div></div><div className="detail-section"><h4>VALIDATION CHECKLIST</h4><div className="checklist"><label><input type="checkbox"/> Confirm component is present in deployed artifact</label><label><input type="checkbox"/> Check reachability and exploit preconditions</label><label><input type="checkbox"/> Review upgrade compatibility and release notes</label><label><input type="checkbox"/> Run tests and re-scan after deployment</label></div></div></>}<div className="drawer-footer"><label>WORK ITEM STATUS</label><select value={action?.status||'Open'} onChange={e=>updateStatus(f,e.target.value)}><option>Open</option><option>In progress</option><option>Resolved</option><option>Accepted risk</option></select><button className="btn btn-primary" onClick={onClose}>Done</button></div></aside></div>
 }
 function UploadModal({onClose,onFile,busy,uploadName}){
   const [drag,setDrag]=useState(false)
