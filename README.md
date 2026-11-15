@@ -1,6 +1,6 @@
 # TrustGraph — Third-Party Software Trust Intelligence
 
-TrustGraph is a hackathon MVP for software supply-chain risk intelligence.
+TrustGraph is a live-first software supply-chain risk intelligence prototype. The default workspace starts empty; users import an actual dependency inventory and query OSV.dev for published advisories. A separate simulation mode loads a seeded fictional enterprise environment for repeatable demonstrations.
 
 ## TrustGraph 2.0 — incident-to-business-impact workflow
 
@@ -19,17 +19,17 @@ See [problem statement](docs/TRUSTGRAPH_2_0_PROBLEM_STATEMENT.md), [architecture
 
 - React + Vite frontend: Overview, Risk findings, Dependency map, Inventory, Response centre and Incident analysis.
 - FastAPI backend with JSON APIs.
-- Seeded multi-application demonstration inventory.
+- Separate simulation mode with seeded multi-application demonstration inventory.
 - Import ZIP, package-lock.json, package.json, requirements.txt and CycloneDX JSON.
 - Explainable risk prioritization and remediation status tracking.
 - JSON and CSV report export.
-- Optional live OSV.dev query endpoint (`POST /api/osv/check`), requiring backend internet access.
+- Primary live vulnerability matching through OSV.dev (`POST /api/osv/check`), requiring backend internet access. Results populate the main Risk findings and Response centre.
 - One-click demo reset.
 
 ## Important accuracy notes
 
-- Built-in `TG-DEMO-*` advisories are synthetic examples, not real CVE records.
-- Live OSV.dev results are separate from synthetic demo findings.
+- Built-in `TG-DEMO-*` advisories are synthetic examples, not real CVE records; they appear only in simulation mode.
+- Live OSV.dev results are the findings shown in live mode. Simulation mode uses its separate synthetic catalogue.
 - The TrustGraph 2.0 incident scenario is simulated; it does not detect actual compromise.
 - Risk scores are transparent prioritization heuristics, not probabilities of exploitation.
 - Import replaces the active in-memory inventory. Backend restart resets inventory and remediation actions.
@@ -62,14 +62,12 @@ For hosted frontend deployment, set Vercel environment variable `VITE_API_URL` t
 
 ## Recommended demo
 
-1. Open Overview and show the seeded inventory.
-2. Open **Incident analysis**.
-3. Click **Run compromised-package demo**.
-4. Explain matching package records and potential dependent components.
-5. Show affected applications and business services.
-6. Explain transparent risk factors and score.
-7. Walk through the response plan.
-8. Distinguish simulated incident data from live OSV.dev vulnerability intelligence.
+1. Start in the empty Live workspace.
+2. Import a real `package-lock.json`, `requirements.txt` or CycloneDX SBOM.
+3. Let TrustGraph query OSV.dev and populate Risk findings with published advisory IDs.
+4. Open a finding and inspect its OSV source link, package version and available fixed-version guidance.
+5. Explain that risk scores combine advisory severity when available with business context; they are prioritization heuristics.
+6. Use **Run simulation** only for the repeatable Northstar Commerce demonstration and compromised-package scenario.
 
 ## API
 
@@ -83,7 +81,8 @@ For hosted frontend deployment, set Vercel environment variable `VITE_API_URL` t
 | GET | `/api/actions` | Remediation statuses |
 | PATCH | `/api/actions/{finding_id}` | Update remediation status |
 | POST | `/api/scan` | Upload dependency manifest |
-| POST | `/api/demo/reset` | Restore seeded demo |
+| POST | `/api/demo/reset` | Load the synthetic simulation workspace |
+| POST | `/api/live/reset` | Return to an empty live workspace |
 | POST | `/api/osv/check` | Optional live OSV query |
 | POST | `/api/incidents/analyze` | Analyze incident against inventory |
 | GET | `/api/incidents/demo` | Deterministic simulated incident |
