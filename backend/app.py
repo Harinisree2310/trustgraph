@@ -73,9 +73,11 @@ def seed_inventory():
       item("pkg-017","legacy-logging-adapter","1.4.0","Maven",False,"Billing Worker","Payment settlement","Critical","Internet-facing","Apache-2.0","1.6.2",["pkg-001"]),
     ]
 
-inventory = seed_inventory()
+inventory = []
+findings = []
 actions = {}
-scan_meta = {"last_scan": now(), "source":"Seeded demo inventory", "scanned_files":12}
+workspace_mode = "live"
+scan_meta = {"last_scan": None, "source":"No inventory imported yet", "scanned_files":0}
 
 def version_tuple(v: str):
     nums = re.findall(r"\d+", str(v))
@@ -131,7 +133,7 @@ def overview():
       "findings":len(findings),"critical":critical,"high":high,
       "affected_apps":affected_apps,
       "risk_score":round(sum(f["risk_score"] for f in findings)/max(1,len(findings))),
-      "last_scan":scan_meta["last_scan"],"scan_source":scan_meta["source"]
+      "last_scan":scan_meta["last_scan"],"scan_source":scan_meta["source"],"mode":workspace_mode,"data_source":scan_meta["source"]
     }
 
 @app.get("/api/health")
@@ -289,41 +291,109 @@ async def scan(file: UploadFile = File(...)):
           "source":"Uploaded dependency manifest"
         })
     inventory=new
-    findings=findings_for(inventory)
+    findings=[]
+    workspace_mode="live"
     actions.clear()
     scan_meta={"last_scan":now(),"source":file.filename or "Uploaded file","scanned_files":1}
-    return {"overview":overview(),"inventory_count":len(inventory),"findings":findings,
-            "message":f"Scanned {len(inventory)} dependency records from {file.filename}."}
+    return {"overview":overview(),"inventory_count":len(inventory),"findings":[],
+            "message":f"Imported {len(inventory)} dependency records from {file.filename}. Run a live OSV scan to check published advisories."}
 
 @app.post("/api/demo/reset")
 def reset_demo():
-    global inventory, findings, scan_meta
+    global inventory, findings, scan_meta, workspace_mode
     inventory=seed_inventory()
     findings=findings_for(inventory)
+    workspace_mode="simulation"
     actions.clear()
-    scan_meta={"last_scan":now(),"source":"Seeded demonstration inventory","scanned_files":12}
-    return {"overview":overview(),"message":"Demonstration environment restored."}
+    scan_meta={"last_scan":now(),"source":"Seeded TrustGraph simulation inventory","scanned_files":12}
+    return {"overview":overview(),"message":"Simulation workspace loaded. Built-in advisory matches are synthetic."}
+
+@app.post("/api/live/reset")
+def reset_live():
+    global inventory, findings, scan_meta, workspace_mode
+    inventory=[]
+    findings=[]
+    workspace_mode="live"
+    actions.clear()
+    scan_meta={"last_scan":None,"source":"No inventory imported yet","scanned_files":0}
+    return {"overview":overview(),"message":"Live workspace ready. Import a dependency inventory to begin."}
+
+def _osv_severity(vuln):
+    candidates=[(vuln.get("database_specific") or {}).get("severity"),
+                (vuln.get("ecosystem_specific") or {}).get("severity")]
+    for value in candidates:
+        if isinstance(value,str) and value.strip().title() in {"Critical","High","Medium","Low"}:
+            return value.strip().title()
+    return "Unknown"
+
+def _osv_fixed_version(vuln, package_name, ecosystem):
+    for affected in vuln.get("affected",[]):
+        pkg=affected.get("package") or {}
+        if pkg.get("name","").lower()!=package_name.lower() or pkg.get("ecosystem","").lower()!=ecosystem.lower():
+            continue
+        for version_range in affected.get("ranges",[]):
+            for event in version_range.get("events",[]):
+                if event.get("fixed"):
+                    return str(event["fixed"])
+    return None
+
+def _osv_risk_finding(component, vuln):
+    severity=_osv_severity(vuln)
+    sev_weight={"Critical":40,"High":30,"Medium":18,"Low":8,"Unknown":12}[severity]
+    criticality_weight={"Critical":25,"High":18,"Medium":10,"Low":4}.get(component.get("criticality"),8)
+    exposure_weight={"Internet-facing":20,"Internal":10,"Build-time":6}.get(component.get("exposure"),5)
+    direct_weight=5 if component.get("direct") else 0
+    score=min(100,round(sev_weight+criticality_weight+exposure_weight+direct_weight))
+    priority="P0" if score>=85 else "P1" if score>=70 else "P2" if score>=50 else "P3"
+    advisory_id=vuln.get("id") or "OSV-UNKNOWN"
+    fixed=_osv_fixed_version(vuln,component["name"],component["ecosystem"])
+    refs=[x.get("url") for x in vuln.get("references",[]) if x.get("url")]
+    vector=next((x.get("score") for x in vuln.get("severity",[]) if x.get("type","").startswith("CVSS")),None)
+    summary=vuln.get("summary") or vuln.get("details") or "OSV advisory matched this package version."
+    recommendation=(f"Upgrade {component['name']} to {fixed} or later, run regression tests, then redeploy the affected application."
+                    if fixed else f"Review {advisory_id} and upstream affected-version guidance before selecting an upgrade.")
+    return {
+      "id":f"osv-{component['id']}-{advisory_id}","package_id":component["id"],
+      "package":component["name"],"version":component["version"],"application":component["application"],
+      "business_service":component["business_service"],"severity":severity,"cvss":None,
+      "cvss_vector":vector,"risk_score":score,"priority":priority,"advisory_id":advisory_id,
+      "summary":summary,"fixed":fixed or "Check upstream advisory","ecosystem":component["ecosystem"],
+      "exposure":component["exposure"],"criticality":component["criticality"],"direct":component["direct"],
+      "source":"OSV.dev","source_url":f"https://osv.dev/vulnerability/{advisory_id}",
+      "references":refs,"demo_intelligence":False,
+      "recommendation":recommendation
+    }
 
 @app.post("/api/osv/check")
 def osv_check():
-    """Optional live OSV enrichment. Requires outbound internet from the host running this API."""
+    """Match imported package versions against published OSV.dev vulnerability records."""
+    global findings, scan_meta, workspace_mode
+    if not inventory:
+        raise HTTPException(400,"Import a dependency inventory before running a live vulnerability scan.")
+    ecosystem_map={"npm":"npm","PyPI":"PyPI","Maven":"Maven"}
+    eligible=[p for p in inventory if ecosystem_map.get(p.get("ecosystem")) and p.get("version") not in {"","unknown","*"}]
+    if not eligible:
+        raise HTTPException(400,"No supported, versioned npm, PyPI or Maven components were found.")
     results=[]
-    for p in inventory[:100]:
-        ecosystem_map={"npm":"npm","PyPI":"PyPI","Maven":"Maven"}
-        ecosystem=ecosystem_map.get(p["ecosystem"])
-        if not ecosystem: continue
-        try:
-            r=requests.post("https://api.osv.dev/v1/query",
-                json={"package":{"name":p["name"],"ecosystem":ecosystem},"version":p["version"]},timeout=6)
-            r.raise_for_status()
-            data=r.json()
-            for v in data.get("vulns",[]):
-                results.append({"package":p["name"],"version":p["version"],"id":v.get("id"),
-                                "summary":v.get("summary","No summary supplied"),
-                                "modified":v.get("modified"),"source":"OSV.dev live query"})
-        except Exception as e:
-            raise HTTPException(502,f"OSV lookup unavailable: {str(e)[:140]}")
-    return {"source":"OSV.dev","items":results,"count":len(results)}
+    try:
+        for offset in range(0,len(eligible),100):
+            batch=eligible[offset:offset+100]
+            queries=[{"package":{"name":p["name"],"ecosystem":ecosystem_map[p["ecosystem"]]},"version":p["version"]} for p in batch]
+            response=requests.post("https://api.osv.dev/v1/querybatch",json={"queries":queries},timeout=25)
+            response.raise_for_status()
+            payload=response.json()
+            for component, match in zip(batch,payload.get("results",[])):
+                for vuln in match.get("vulns",[]):
+                    results.append(_osv_risk_finding(component,vuln))
+    except Exception as e:
+        raise HTTPException(502,f"OSV.dev lookup failed. Inventory was retained; retry the live scan. Details: {str(e)[:160]}")
+    findings=sorted(results,key=lambda x:(-x["risk_score"],x["package"],x["advisory_id"]))
+    workspace_mode="live"
+    actions.clear()
+    scan_meta={"last_scan":now(),"source":"OSV.dev live vulnerability query","scanned_files":len(eligible)}
+    return {"source":"OSV.dev","items":findings,"count":len(findings),"scanned_components":len(eligible),
+            "unsupported_components":len(inventory)-len(eligible),"overview":overview(),
+            "message":f"Checked {len(eligible)} package versions against OSV.dev; found {len(findings)} matching advisories."}
 
 @app.get("/api/export/{fmt}")
 def export_report(fmt: str):
