@@ -277,7 +277,7 @@ def parse_cyclonedx(data):
 
 @app.post("/api/scan")
 async def scan(file: UploadFile = File(...)):
-    global inventory, findings, scan_meta
+    global inventory, findings, scan_meta, workspace_mode
     raw=await file.read()
     parsed=parse_upload(file.filename or "upload",raw)
     new=[]
